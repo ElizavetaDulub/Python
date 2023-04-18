@@ -6,7 +6,8 @@ import os
 import xml.etree.ElementTree as ET
 
 directory = r'D:\\Python\\CreditReports'
-df = pd.DataFrame(columns=['Сумма осн. д.', 'Сумма проц.', 'Дата'])
+df = pd.DataFrame(columns=['Сумма основного долга', 'Сумма процентов', 'Дата', 'УНП/Индентиф. номер',
+                           'Наименование клиента', 'Дата формирования клиента'])
 first_level_node = ['credittransaction', 'LeasingTransaction']
 second_level_node = ['lastpresentation','latesum', 'latepercent', 'LateLeasingSum']
 
@@ -20,10 +21,10 @@ def parse_sum(node_2):
 
 
 def parse_node_1(node_1):
-    latesum, latepercent, date = None, None, None
+    latesum, latepercent, date, client_number, client_name, sign_date = None, None, None, None, None, None
     if node_1.nodeName == 'contractnumber':
         latesum = 'ДОГОВОР ' + node_1.childNodes[0].nodeValue
-        df.loc[df.shape[0]] = [latesum, latepercent, date]
+        df.loc[df.shape[0]] = [latesum, latepercent, date, client_name, client_number, sign_date]
     for i, item in enumerate(first_level_node):
         if node_1.nodeName == item:
             for node_2 in node_1.childNodes:
@@ -38,15 +39,40 @@ def parse_node_1(node_1):
                 elif node_2.nodeName == "LateLeasingSum":
                         latesum = parse_sum(node_2)
 
-            df.loc[df.shape[0]] = [latesum, latepercent, date]
+            df.loc[df.shape[0]] = [latesum, latepercent, date, client_name, client_number, sign_date]
 
+
+def parse_client_info(doc):
+    client_info = doc.getElementsByTagName('Response')
+    latesum, latepercent, date, client_number, client_name, sign_date = None, None, None, None, None, None
+    for client in client_info:
+        if client.getAttribute('type') == '11012' and client.getAttribute('name') == 'getfullhistoryfiz':
+            print('ФИЗЛИЦО')
+            for number in doc.getElementsByTagName('IDNumber'):
+                client_number = number.childNodes[0].nodeValue
+                print(client_number)
+            for name in doc.getElementsByTagName('FIO'):
+                client_name =str()
+                for i in name.childNodes:
+                    client_name += i.childNodes[0].nodeValue + ' '
+                    print(client_name)
+        elif client.getAttribute('type') == '11022' and client.getAttribute('name') == 'getfullhistoryjur':
+            print('ЮРЛИЦО')
+            for number in doc.getElementsByTagName('UNP'):
+                client_number = number.childNodes[0].nodeValue
+                print(client_number)
+            for name in doc.getElementsByTagName('name'):
+                client_name = name.childNodes[0].nodeValue
+                print(client_name)
+    df.loc[df.shape[0]] = [latesum, latepercent, date, client_name, client_number, sign_date]
 
 
 def parse_reports(file):
     doc = minidom.parse(file)
-
     reports_tag = doc.getElementsByTagName("contract")
     print(type(reports_tag))
+
+    parse_client_info(doc)
 
     for contract in reports_tag:
         for node_1 in contract.childNodes:
