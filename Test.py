@@ -6,8 +6,6 @@ import os
 import xml.etree.ElementTree as ET
 
 directory = r'D:\\Python\\CreditReports'
-df = pd.DataFrame(columns=['Сумма основного долга', 'Сумма процентов', 'Дата', 'УНП/Индентиф. номер',
-                           'Наименование клиента', 'Дата формирования клиента'])
 first_level_node = ['credittransaction', 'LeasingTransaction']
 second_level_node = ['lastpresentation','latesum', 'latepercent', 'LateLeasingSum']
 
@@ -20,7 +18,7 @@ def parse_sum(node_2):
             return float(node_3.childNodes[0].nodeValue)
 
 
-def parse_node_1(node_1):
+def parse_node_1(node_1, df):
     latesum, latepercent, date, client_number, client_name, sign_date = None, None, None, None, None, None
     if node_1.nodeName == 'contractnumber':
         latesum = 'ДОГОВОР ' + node_1.childNodes[0].nodeValue
@@ -42,7 +40,7 @@ def parse_node_1(node_1):
             df.loc[df.shape[0]] = [latesum, latepercent, date, client_name, client_number, sign_date]
 
 
-def parse_client_info(doc):
+def parse_client_info(doc, df):
     client_info = doc.getElementsByTagName('Response')
     latesum, latepercent, date, client_number, client_name, sign_date = None, None, None, None, None, None
     for client in client_info:
@@ -64,25 +62,33 @@ def parse_client_info(doc):
             for name in doc.getElementsByTagName('name'):
                 client_name = name.childNodes[0].nodeValue
                 print(client_name)
+    for s_date in doc.getElementsByTagName('sign_time'):
+        sign_date = s_date.childNodes[0].nodeValue
+        print(sign_date)
     df.loc[df.shape[0]] = [latesum, latepercent, date, client_name, client_number, sign_date]
+    return client_number
 
 
-def parse_reports(file):
+def parse_reports(file, df):
     doc = minidom.parse(file)
     reports_tag = doc.getElementsByTagName("contract")
     print(type(reports_tag))
 
-    parse_client_info(doc)
+    client_number = parse_client_info(doc, df)
 
     for contract in reports_tag:
         for node_1 in contract.childNodes:
-            parse_node_1(node_1)
+            parse_node_1(node_1, df)
 
     writer = pd.ExcelWriter('dataframe.xlsx', engine='xlsxwriter')
-    df.to_excel(writer, sheet_name='Sheet1', startrow=1, header=False, index=False, freeze_panes=(1, 0))
+    df.to_excel(writer, sheet_name=client_number, startrow=1, header=False, index=False, freeze_panes=(2, 0))
+
+
+    # writer = pd.ExcelWriter('dataframe.xlsx', engine='openpyxl', mode='a', if_sheet_exists='new')
+    # df.to_excel(writer, sheet_name=client_number, startrow=1, header=False, index=False, freeze_panes=(2, 0))
 
     workbook = writer.book
-    worksheet = writer.sheets['Sheet1']
+    worksheet = writer.sheets[client_number]
 
     header_format = workbook.add_format({
         'bold': True,
@@ -103,7 +109,9 @@ def parse_reports(file):
 for file in os.scandir(directory):
     if file.name.endswith('.xml'):
         print(file.path)
-        parse_reports(file.path)
+        df = pd.DataFrame(columns=['Сумма основного долга', 'Сумма процентов', 'Дата', 'УНП/Индентиф. номер',
+                                   'Наименование клиента', 'Дата формирования отчёта'])
+        parse_reports(file.path, df)
 
 
 
