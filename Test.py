@@ -3,8 +3,27 @@ import pandas as pd
 import datetime as dt
 import os
 import numpy as np
+from lxml import html, etree
+from bs4 import BeautifulSoup
 
-import xml.etree.ElementTree as ET
+
+# with open('file_legal_entity.html', 'r', encoding='latin-1') as inp:
+#     soup = BeautifulSoup(inp, 'html.parser')
+#
+# # Split the document by lines and join the lines
+# # from index 1 to remove the doctype Html as it is
+# # present in index 0 from the parsed document.
+# lines = soup.prettify().splitlines()
+# content = "\n".join(lines[1:])
+#
+# # Open a output.xml file and write the modified content.
+# with open("output.xml", 'w', encoding='latin-1') as out:
+#     out.write(content)
+# with open('file_legal_entity.html', 'r', encoding='utf-8') as inp:
+#     htmldoc = html.fromstring(inp.read())
+#
+# with open("output.xml", 'wb') as out:
+#     out.write(etree.tostring(htmldoc))
 
 directory = r'D:\\Python\\CreditReports'
 first_level_node = ['credittransaction', 'LeasingTransaction']
@@ -41,9 +60,9 @@ def parse_node_1(contract_child, df):
     return df
 
 
-def delay(temp_df, df):
+def delay(temp_df, df, delay_df):
     flag_latesum, flag_latepercent = False, False
-    delay_latesum, count_proc, amount_days, diff_date = 0, 0, 0, 0
+    delay_latesum, delay_perc, amount_days, diff_date = 0, 0, 0, 0
     date_dolg_in = None
     last_date = df.loc[df.index[0], 'Дата формирования отчёта'] - dt.timedelta(weeks=52)
     print('last date', last_date)
@@ -56,7 +75,7 @@ def delay(temp_df, df):
             continue
         if row['Дата'] < last_date:
             continue
-        elif row['Сумма основного долга'] == 0.0 and flag_latesum:
+        if row['Сумма основного долга'] == 0.0 and flag_latesum:
             delay_latesum += 1
             flag_latesum = False
             diff_date = row['Дата'] - date_dolg_in
@@ -70,19 +89,42 @@ def delay(temp_df, df):
             date_dolg_in = row['Дата']
             print('Флаг поднялся: клиент вышел на просрочку')
             print(row['Сумма основного долга'])
+        if row['Сумма процентов'] == 0.0 and flag_latepercent:
+            delay_perc += 1
+            flag_latepercent = False
+            diff_date = row['Дата'] - date_dolg_in
+            if diff_date > dt.timedelta(days=30):
+                amount_days += 1
+            print('Флаг опустился: просрочка погашена')
+            print(row['Сумма процентов'])
+        elif row['Сумма процентов'] is not None and not flag_latepercent and \
+                row['Сумма процентов'] != 0.0:
+            flag_latepercent = True
+            date_dolg_in = row['Дата']
+            print('Флаг поднялся: клиент вышел на просрочку')
+            print(row['Сумма процентов'])
     if flag_latesum:
         delay_latesum += 1
         diff_date = temp_df.iloc[-2, 2] - date_dolg_in
-
         if diff_date > dt.timedelta(days=30):
             amount_days += 1
+    if flag_latepercent:
+        delay_perc += 1
+        diff_date = temp_df.iloc[-2, 2] - date_dolg_in
+        if diff_date > dt.timedelta(days=30):
+            amount_days += 1
+    delay_sum = delay_latesum + delay_perc
+    if delay_sum > 4:
+        print('ПРОСРОЧКА БОЛЕЕ 4 РАЗ!!!!!!!!!')
+    delay_df.loc[delay_df.shape[0]] = [delay_sum, amount_days]
+    return print('Количество задолженностей', delay_latesum, delay_perc, '  ', 'Больше 30 дней', amount_days)
 
-    return print('Количество задолженностей', delay_latesum, '  ', 'Больше 30 дней', amount_days)
 
-
-def parse_client_info(doc, df):
+def parse_client_info(doc, df, df_final):
     client_info = doc.getElementsByTagName('Response')
     latesum, latepercent, date, client_number, client_name, sign_date = None, None, None, None, None, None
+    delay_sum, count_delay_sum, delay_30days, count_delay_30days, credit_history, conclusion = \
+        None, None, None, None, None, None
     for client in client_info:
         if client.getAttribute('type') == '11012' and client.getAttribute('name') == 'getfullhistoryfiz':
             print('ФИЗЛИЦО')
@@ -106,17 +148,30 @@ def parse_client_info(doc, df):
         sign_date = dt.datetime.fromisoformat(s_date.childNodes[0].nodeValue).date()
 
     df.loc[df.shape[0]] = [latesum, latepercent, date,  client_number, client_name, sign_date]
-    return client_number
+
+    return sign_date, client_number, client_name
 
 
-def parse_reports(file, writer):
+def parse_reports(file):
+    client_number, client_name, sign_date = None, None, None
+    index, delay_sum, count_delay_sum, delay_30days, count_delay_30days, credit_history, conclusion = \
+        None, None, None, None, None, None, None
     df = pd.DataFrame(columns=['Сумма основного долга', 'Сумма процентов', 'Дата', 'УНП/Индентиф. номер',
                                'Наименование клиента', 'Дата формирования отчёта'])
+    df_final = pd.DataFrame(columns=['№ п/п', 'Дата формирования отчета', 'УНП/ личный номер', 'Наименование клиента',
+                                     'Имелись факты наличия просрочек за последние 12 месяцев по погашению '
+                                     'основного долга и/или процентов (лизинговых платежей) более 4 раз',
+                                     'Имелись факты наличия просрочек за последние 12 месяцев по погашению основного '
+                                     'долга и/или процентов (лизинговых платежей) продолжительностью более 30 '
+                                     'календарных дней по любой из просрочек', 'На текущую дату у Клиента имеется '
+                                     'просроченная задолженность по любому из договоров кредитного характера*',
+                                     'Отсутствие кредитной истории', 'Вывод об оценке кредитной истории'])
     doc = minidom.parse(file)
     contract_tags = doc.getElementsByTagName("contract")
     print(type(contract_tags))
 
-    client_number = parse_client_info(doc, df)
+    sign_date, client_number, client_name = parse_client_info(doc, df, df_final)
+    delay_df = pd.DataFrame(columns=['Delays count', 'Delays count 30days'])
 
     for contract in contract_tags:
         temp_df = pd.DataFrame(columns=['Сумма основного долга', 'Сумма процентов', 'Дата', 'УНП/Индентиф. номер',
@@ -128,35 +183,71 @@ def parse_reports(file, writer):
             for contact_child in contract.childNodes:
                 temp_df = parse_node_1(contact_child, temp_df)
         df = pd.concat([df, temp_df], ignore_index=True)
-        delay(temp_df, df)
+        delay(temp_df, df, delay_df)
+    count_delay_sum = sum(delay_df['Delays count'].to_list())
+    if count_delay_sum > 4:
+        delay_sum = 'ДА'
+    else:
+        delay_sum = 'НЕТ'
+    count_delay_30days = sum(delay_df['Delays count 30days'].to_list())
+    if count_delay_30days > 0:
+        delay_30days = 'ДА'
+    else:
+        delay_30days = 'НЕТ'
+    df_final.loc[df_final.shape[0]] = [sign_date, client_number, client_name, delay_sum, count_delay_sum,
+                                       delay_30days, count_delay_30days, credit_history, conclusion]
 
-    df.to_excel(writer, sheet_name=client_number, startrow=1, header=False, index=False, freeze_panes=(2, 0))
+    return df, df_final, client_number
+
+def df_writer(df, df_final, client_number):
+    writer = pd.ExcelWriter('dataframe.xlsx', engine='xlsxwriter')
+    file1 = 'dataframe.xlsx'
+    print(os.path.abspath(file1))
+    if os.path.exists(r'D:\Python\dataframe.xlsx'):
+        df = pd.read_excel(r'D:\Python\dataframe.xlsx')
+        df.to_excel(writer, sheet_name=client_number, startrow=1, header=False, index=False, freeze_panes=(2, 0))
+    writer_final = pd.ExcelWriter('dataframe_final.xlsx', engine='xlsxwriter')
+    df_final.to_excel(writer_final, startrow=1, header=False, freeze_panes=(1, 0))
 
     # writer = pd.ExcelWriter('dataframe.xlsx', engine='openpyxl', mode='a', if_sheet_exists='new')
     # df.to_excel(writer, sheet_name=client_number, startrow=1, header=False, index=False, freeze_panes=(2, 0))
 
     workbook = writer.book
+    workbook_final = writer_final.book
     worksheet = writer.sheets[client_number]
+    worksheet_final = writer_final.sheets['Sheet1']
 
     header_format = workbook.add_format({
         'bold': True,
         'text_wrap': True,
         'valign': 'vcenter',
-        'align' : 'center',
+        'align': 'center',
+        'fg_color': '#D7E4BC',
+        'border': 1
+    })
+    header_format_final = workbook_final.add_format({
+        'bold': True,
+        'text_wrap': True,
+        'valign': 'vcenter',
+        'align': 'center',
         'fg_color': '#D7E4BC',
         'border': 1
     })
 
     for col_num, value in enumerate(df.columns.values):
         worksheet.write(0, col_num, value, header_format)
+    for col_num, value in enumerate(df_final.columns.values):
+        worksheet_final.write(0, col_num, value, header_format_final)
+
+    writer.close()
+    writer_final.close()
 
 
-writer = pd.ExcelWriter('dataframe.xlsx', engine='xlsxwriter')
 for file in os.scandir(directory):
     if file.name.endswith('.xml'):
         print(file.path)
-        parse_reports(file.path, writer)
-writer.close()
+        df, df_final, client_number = parse_reports(file.path)
+        df_writer(df, df_final, client_number)
 
 
 # flag_dolg, flag_proc = False, False
